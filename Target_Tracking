@@ -1,0 +1,378 @@
+// Target Finder
+// 2 Stepper motors
+
+#include <p18cxxx.h>
+
+#include <stdio.h>
+#include <string.h>
+#pragma config WDT = OFF
+
+/************** used for LCD code **************/
+#define	RS PORTBbits.RB4
+#define	EN PORTBbits.RB7
+
+
+struct Receiver
+{
+   unsigned targetFound  : 1;   //#pragma idata abcd_motor1=0x100
+   unsigned lastRotationDirection : 1;
+   unsigned lastMotorSequence : 4;
+   unsigned completeRotation : 1;
+  //unsigned direction : 1;
+   signed char steps;
+} receiver1, receiver2;
+
+void turnmotor(unsigned char,signed char );
+void InitialSearch(void);
+void Targettracking(void);
+void calculateTargetPosition(signed * );
+
+/************** used for LCD code **************/
+void LCDCOM(unsigned char);  // send command to LCD
+void LCDDATA(unsigned char); // send character to LCD
+void initializeLCD(void);  //initialize LCD
+void integer2LCDdisplay(unsigned int);
+void INT2ASCII(unsigned char* ,unsigned int );
+unsigned char digits[4];
+void Delay40micro(void); 
+void delaynmsec(unsigned int);
+
+void main(void)
+{
+    unsigned int i;   int j=1;
+    unsigned int targetCoordinates[4]; 
+    unsigned char message1[]="Target out of range";
+    unsigned char message2[]="The coordinates of the target:";
+    unsigned char * ptr=digits;
+    signed char * ptrTC=targetCoordinates;
+
+    receiver1.lastMotorSequence=8;
+    receiver2.lastMotorSequence=8;
+    receiver1.targetFound=0;
+    receiver2.targetFound=0;
+    receiver1.steps=0;
+    receiver2.steps=0;
+    receiver1.lastRotationDirection==0;
+    receiver2.lastRotationDirection==0;
+    receiver1.completeRotation=0;
+    receiver2.completeRotation=0;
+
+/****** To configure RA0 - RA3 & R5 as digital I/O  load ADCON1 with 0x07**********/
+    ADCON1 = 0x07; //Configure A/D for digital inputs
+    TRISB=0;       // connected to LCD
+    TRISC=0xFF;
+    TRISD=0; 
+//    for(i=1;i<100;i++)      turnmotor(1,1); 
+//      PORTB=receiver1.lastMotorSequence;  for(j=1;j<1000;j++);
+
+  do
+  {
+    InitialSearch();
+////////////////////    
+    do
+    {
+       initializeLCD();
+       LCDCOM( (0x80|0x00) );  /*First line: go to space loc. n(>=0): 0x80|n */
+
+       if (receiver1.targetFound==1 & receiver2.targetFound==1)  
+       {  
+          calculateTargetPosition(ptrTC);
+          for(i=0 ; i<strlen(message2); i++) LCDDATA(message2[i]);
+
+          LCDCOM((0x80|0x40));  //Second line: go to space loc. n(>=0x39): 0x80|n
+          for(i=0; i<2; i++)
+          {
+            INT2ASCII(ptr,targetCoordinates[i]); 
+            integer2LCDdisplay(digits);
+            LCDDATA(' ');  LCDDATA(',');  LCDDATA(' ');
+          } 
+       } 
+       else
+          for(i=0 ; i<strlen(message1); i++) 
+          {
+             LCDDATA(message1[i]);  
+          }
+       while(PORTCbits.RC0==0 & PORTCbits.RC1==0 & receiver1.targetFound==1 & receiver2.targetFound==1);
+                                             
+       if (receiver1.targetFound==1 & receiver2.targetFound==1) Targettracking();    
+       //else break; 
+     //printf("\n receiver1.targetFound %d  %x",receiver1.targetFound,(receiver1.targetFound==0 & receiver2.targetFound==1));   
+    }while(receiver1.targetFound==1 & receiver2.targetFound==1);
+
+    for(i=0 ; i<strlen(message1); i++) 
+    {
+       LCDDATA(message1[i]);  
+    }
+ 
+    delaynmsec(100); //printf("***************************END*****************************");
+  }while(1);   
+}    
+
+void SerTX(unsigned char x)
+{
+    TXREG=x; //place value in buffer
+    while(PIR1bits.TXIF==0);  //wait until all gone
+}
+
+ void SerRX(void )
+{
+    while(PIR1bits.RCIF==0); //wait to receive
+    LCDDATA(RCREG);
+}
+
+
+void turnmotor(unsigned char motorNumber,signed char Nsteps)
+{  
+/**** RD3:0 to pin1:4 for motor 1 &  RD7:4 to pin5:8 for motor 2 *****/
+/**** pin16:13 to pinABCD for motor 1 &  pin12:9 to pinABCD for motor 2 *****/
+  signed char i;
+  unsigned char temp;
+
+  if(Nsteps>0)
+  {
+      for(i=0; i<Nsteps; i++)
+      {  
+        if(motorNumber==1)
+        { 
+		//printf(" Motor1: %d  ",receiver1.steps); 
+          receiver1.lastMotorSequence =
+            (receiver1.lastMotorSequence>>1 )|(receiver1.lastMotorSequence<<3);
+          temp=receiver1.lastMotorSequence;
+          PORTD= 0x0F & temp;        
+///**/printf(" \n Motor 1* %d  %d    %x",Nsteps,receiver1.steps,receiver1.lastMotorSequence);
+          receiver1.steps++;
+        }
+        else if(motorNumber==2)
+        {
+          receiver2.lastMotorSequence =
+           (receiver2.lastMotorSequence>>1 )|(receiver2.lastMotorSequence<<3);
+          temp=(receiver2.lastMotorSequence<<4);
+          PORTD= 0xF0 & (temp);        
+///**/printf("  \n Motor 2* %d  %d    %x",Nsteps,receiver2.steps,receiver2.lastMotorSequence);
+          receiver2.steps++;
+        }  
+                                   delaynmsec(2); 
+      }
+  }
+  else if(Nsteps<0)
+  { 
+      for(i=0; i>Nsteps; i--)
+      {  
+        if(motorNumber==1)
+        {
+          receiver1.lastMotorSequence =
+              (receiver1.lastMotorSequence>>3 )|(receiver1.lastMotorSequence<<1);
+          temp=receiver1.lastMotorSequence;
+          PORTD= 0x0F & temp;        
+///**/printf("  \n Motor 1* %d  %d    %x",Nsteps,receiver1.steps,receiver1.lastMotorSequence);
+          receiver1.steps--;
+        }
+        else if(motorNumber==2)
+        {
+          receiver2.lastMotorSequence =
+           (receiver2.lastMotorSequence>>3 )|(receiver2.lastMotorSequence<<1);
+          temp=(receiver2.lastMotorSequence<<4);
+          PORTD= 0xF0 & (temp);
+///**/printf("  \n Motor 2* %d  %d    %x",Nsteps,receiver2.steps,receiver2.lastMotorSequence);
+          receiver2.steps--;
+        }  
+
+                                    delaynmsec(2); 
+
+      }
+  } 
+}
+
+
+void InitialSearch(void)
+{  // /*remove**/ int i=0; printf("\n***********Start***********\n");
+    receiver1.completeRotation=0;
+    receiver2.completeRotation=0;
+   receiver1.targetFound=0;
+   receiver2.targetFound=0; 
+
+    do
+    {   ///*remove**/i+=75;
+       if (PORTCbits.RC0==0)  //****chg to PORTCbits.RC0==0*******/
+       {
+	    receiver1.targetFound=1;  
+       }	
+       else if (receiver1.completeRotation==0)
+       {
+           turnmotor(1,1);  
+       }
+
+       if(PORTCbits.RC1==0)   //chg to PORTCbits.RC1==0
+       {
+           receiver2.targetFound=1;
+       }
+       else if (receiver2.completeRotation==0)  
+       {
+           turnmotor(2,-1);    
+       }
+
+  /*******Remove********************/
+   //integer2LCDdisplay('i');
+   //if(receiver1.completeRotation==1) 
+//printf(" \n  i=%d   %d   %d  %d   %d",i,receiver1.steps,
+//      receiver2.steps,receiver1.completeRotation,receiver2.completeRotation); 
+  /***************************/
+      if(receiver1.steps>=48) {receiver1.steps-=48; receiver1.completeRotation=1;}
+       if(receiver1.steps<=-48) {receiver1.steps+=48; receiver1.completeRotation=1;}
+      if(receiver2.steps>=48) {receiver2.steps-=48; receiver2.completeRotation=1;}
+       if(receiver2.steps<=-48) {receiver2.steps+=48; receiver2.completeRotation=1;}      
+           
+  }while(!(receiver1.targetFound==1 & receiver2.targetFound==1) &   
+               !(receiver1.completeRotation==1 & receiver2.completeRotation==1));
+     
+//printf("\n *******end********\n");
+}
+
+
+void calculateTargetPosition(signed * ptrTC)
+{
+    unsigned int  x1,x2;
+    x1=(900+75*receiver1.steps)/10;
+    x2=(900+75*receiver2.steps)/10;   
+    *ptrTC = x1;
+    *(ptrTC +1) = x2;
+}
+
+void Targettracking(void)
+{                                      
+   unsigned char Nsteps1=1,Nsteps2=1;
+   receiver1.lastRotationDirection=0; 
+   receiver2.lastRotationDirection=0;
+   receiver1.targetFound=0;
+   receiver2.targetFound=0;  
+   //receiver1.steps=0; 
+   //receiver2.steps=0;   
+   //receiver1.completeRotation=0;
+   //receiver2.completeRotation=0;   
+                 
+   do
+   {
+      if (PORTCbits.RC0==1 & receiver1.lastRotationDirection==0)   /****chg to PORTCbits.RC0==1***/
+      {      
+         turnmotor(1,Nsteps1);     
+         receiver1.lastRotationDirection=1; 
+         Nsteps1++; 
+//printf("     Nsteps1=%d receiver1.lastRotationDirection=%d   receiver1.lastsequence=%x"
+//,Nsteps1,receiver1.lastRotationDirection, receiver1.lastMotorSequence);
+      }
+      else if (PORTCbits.RC0==1 & receiver1.lastRotationDirection==1) /****chg to PORTCbits.RC0==1***/
+      {
+         turnmotor(1,-Nsteps1);     
+         receiver1.lastRotationDirection=0; 
+         Nsteps1++;    
+//         printf("   Nsteps1=%d receiver1.lastRotationDirection=%d  lastsequence%x",
+//  Nsteps1,receiver1.lastRotationDirection,receiver1.lastMotorSequence); 
+      } 
+      else 	receiver1.targetFound=1;
+
+      if (PORTCbits.RC1==1 & receiver2.lastRotationDirection==0) /****chg to PORTCbits.RC1==1***/
+      {                                             
+         turnmotor(2,Nsteps2);     
+         receiver2.lastRotationDirection=1; 
+         Nsteps2++;
+//         printf("    Nsteps2=%d receiver2.lastRotationDirection=%d   lastsequence%x",
+//Nsteps2,receiver2.lastRotationDirection,receiver2.lastMotorSequence);
+      }
+      else if (PORTCbits.RC1==1 & receiver2.lastRotationDirection==1) /****chg to PORTCbits.RC1==1***/
+      {                                   
+         turnmotor(2,-Nsteps2);     
+         receiver2.lastRotationDirection=0; 
+         Nsteps2++;
+//         printf("   Nsteps2=%d receiver2.lastRotationDirection=%d lastsequence %x",
+//Nsteps2,receiver2.lastRotationDirection,receiver2.lastMotorSequence);     
+      }
+      else 	receiver2.targetFound=1; 
+
+      if(receiver1.steps>=48) {receiver1.steps-=48; receiver1.completeRotation=1;}
+       if(receiver1.steps<=-48) {receiver1.steps+=48; receiver1.completeRotation=1;}
+      if(receiver2.steps>=48) {receiver2.steps-=48; receiver2.completeRotation=1;}
+       if(receiver2.steps<=-48) {receiver2.steps+=48; receiver2.completeRotation=1;}
+//delaynmsec(1);     
+   } while( ( (receiver1.targetFound==0) | (receiver2.targetFound==0) ) &    (Nsteps1<48) & (Nsteps2<48));
+
+///***/printf("\n PORTCbits.RC0=%d  PORTCbits.RC1=%d ",PORTCbits.RC0,PORTCbits.RC1);
+}
+
+
+
+
+void integer2LCDdisplay(unsigned int z)
+{   /* Display integer on LCD */
+    unsigned char i;
+    unsigned char* ptr=digits;
+    INT2ASCII(ptr, z); //convert integer to ASCII characters
+           
+    /**********   Display to LCD **********/
+    //LCDCOM((0x80|0x03));  //First line: go to space loc. n(>=0): 0x80|n
+    for(i=3; i<strlen(digits); i--)
+    {   
+	    LCDDATA(digits[i]); 
+    } 
+}
+
+
+void INT2ASCII(unsigned char* ptr,unsigned int z) 
+{
+      unsigned char i;        
+      for (i=0; i<4;i++) 
+      {                             
+           *(ptr+i)=z%10+'0';       
+            z/=10;      
+         }
+      for (i=0; i<0; i++) digits[i]=*(ptr+i);   
+}
+
+void Delay40micro(void)
+{
+   unsigned char j;
+   for (j=0; j<20; j++) { _asm  NOP   _endasm}
+}
+
+void delaynmsec(unsigned int n_msec)
+{
+   unsigned char j,k;
+   for (k=0;k<n_msec-1;k++) 
+       for (j=1; j<60; j++)     Delay40micro(); 
+}
+
+void initializeLCD( void)
+{
+	//Initialization of the LCD: configuration 
+    LCDCOM(0x28);  //init LCD for 2 lines & 5x7 matrix
+	LCDCOM(0x0e);  //send command for LCD on, cursor on
+	LCDCOM(0x01);  //clear LCD
+    LCDCOM(0x06);  //shift cursor right
+} 
+
+void LCDCOM(unsigned char x)
+{
+	// Write a command to LCD 
+    PORTB=(x>>4)&0x0f;
+	RS=0;
+	EN=1;
+	EN=0;     //EN=0 for H-to-L pulse
+	PORTB=x&0x0f;
+	RS=0;
+	EN=1;     
+	EN=0;     //EN=0 for H-to-L pulse
+	delaynmsec(1);
+}
+
+void LCDDATA(unsigned char x)
+{
+	// Write a data (character) to LCD 
+    PORTB=(x>>4)&0x0f;
+	RS=1;
+	EN=1;
+	EN=0;     //EN=0 for H-to-L pulse
+	PORTB=x&0x0f;
+	RS=1;
+	EN=1;
+	EN=0;     //EN=0 for H-to-L pulse
+	Delay40micro();
+}
